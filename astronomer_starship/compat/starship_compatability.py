@@ -1008,9 +1008,17 @@ class StarshipAirflow:
                 self.session.execute(table.insert().values(items))
             else:
                 batch_size = int(batch_size)
+                total_chunks = (len(items) + batch_size - 1) // batch_size
                 for i in range(0, len(items), batch_size):
                     batch = items[i : i + batch_size]
                     self.session.execute(table.insert().values(batch))
+                    chunk_num = i // batch_size + 1
+                    logger.debug(
+                        "Chunk %d/%d inserted (%d items)",
+                        chunk_num,
+                        total_chunks,
+                        len(batch)
+                    )
             self.session.commit()
             for item in items:
                 if "conf" in item:
