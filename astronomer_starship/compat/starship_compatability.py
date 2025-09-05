@@ -978,6 +978,9 @@ class StarshipAirflow:
         from sqlalchemy import MetaData
         import pickle
 
+        # TODO: Improve configuration setting and value validation.
+        batch_size = os.getenv("STARSHIP_INSERT_BATCH_SIZE")
+
         if not items:
             return []
 
@@ -1001,7 +1004,13 @@ class StarshipAirflow:
             metadata = MetaData(bind=engine)
             metadata.reflect(engine, only=[table_name])
             table = metadata.tables[table_name]
-            self.session.execute(table.insert().values(items))
+            if not batch_size:
+                self.session.execute(table.insert().values(items))
+            else:
+                batch_size = int(batch_size)
+                for i in range(0, len(items), batch_size):
+                    batch = items[i : i + batch_size]
+                    self.session.execute(table.insert().values(batch))
             self.session.commit()
             for item in items:
                 if "conf" in item:
