@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Any, TypedDict, Tuple, Dict, List, Union
+    from typing import Any, TypedDict, Tuple, Dict, List, Union, Optional
 else:
     TypedDict = object
 import datetime
@@ -135,19 +135,52 @@ def generic_get_all(session: Session, qualname: str, attrs: dict) -> list:
     return results_to_list_via_attrs(results, attrs)
 
 
-def generic_set_one(session: Session, qualname: str, attrs: dict, **kwargs):
+def generic_set_one(
+    session: Session,
+    qualname: str,
+    attrs: dict,
+    unique_fields: Optional[list] = None,
+    **kwargs,
+):
     """
     :param session: The SQLAlchemy session
     :param qualname: The qualified name of the object to create
     :param attrs: attrs which inform what to return
+    :param unique_fields: List of field names that form unique constraint for upsert
     :param kwargs: The kwargs given to the created object
     """
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy import and_
+
+    # TODO: Improve true/false from envvar
+    unique_fields = unique_fields or []
+    upsert_enabled = bool(os.getenv("STARSHIP_UPSERT_ENABLED"))
+
     (_, thing_cls) = import_from_qualname(qualname)
     try:
         thing = thing_cls(**kwargs)
         session.add(thing)
         session.commit()
         return results_to_list_via_attrs([thing], attrs)[0]
+    except IntegrityError as e:
+        session.rollback()
+        all_unique_fields_available = all(field in kwargs for field in unique_fields)
+        if unique_fields and upsert_enabled and all_unique_fields_available:
+            # Query existing record by unique constraint
+            filters = [
+                getattr(thing_cls, field) == kwargs[field]
+                for field in unique_fields
+            ]
+            updated_count = (
+                session.query(thing_cls).filter(and_(*filters)).update(kwargs)
+            )
+
+            if updated_count > 0:
+                logger.debug("Row exists for %s, performing upsert", thing_cls.__name__)
+                session.commit()
+                return results_to_list_via_attrs([thing], attrs)[0]
+
+        raise e
     except Exception as e:
         session.rollback()
         raise e
@@ -263,8 +296,13 @@ class StarshipAirflow:
         )
 
     def set_variable(self, **kwargs):
+        unique_fields = ["key"]
         return generic_set_one(
-            self.session, "airflow.models.Variable", self.variable_attrs(), **kwargs
+            self.session,
+            "airflow.models.Variable",
+            self.variable_attrs(),
+            unique_fields,
+            **kwargs,
         )
 
     def delete_variable(self, **kwargs):
@@ -291,8 +329,13 @@ class StarshipAirflow:
         return generic_get_all(self.session, "airflow.models.Pool", self.pool_attrs())
 
     def set_pool(self, **kwargs):
+        unique_fields = ["pool"]
         return generic_set_one(
-            self.session, "airflow.models.Pool", self.pool_attrs(), **kwargs
+            self.session,
+            "airflow.models.Pool",
+            self.pool_attrs(),
+            unique_fields,
+            **kwargs,
         )
 
     def delete_pool(self, **kwargs):
@@ -359,8 +402,13 @@ class StarshipAirflow:
         )
 
     def set_connection(self, **kwargs):
+        unique_fields = ["conn_id"]
         return generic_set_one(
-            self.session, "airflow.models.Connection", self.connection_attrs(), **kwargs
+            self.session,
+            "airflow.models.Connection",
+            self.connection_attrs(),
+            unique_fields,
+            **kwargs,
         )
 
     def delete_connection(self, **kwargs):
@@ -1513,7 +1561,7 @@ class StarshipAirflow28(StarshipAirflow27):
                 value=base64.b64decode(value),
                 **kwargs,
             )
-
+            # TODO: Add upsert logic 
             self.session.add(xcom)
             self.session.commit()
 
